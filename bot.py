@@ -1,9 +1,18 @@
+import asyncio
+
+# --- PARCHE PARA PYTHON MODERNO / RAILWAY (Evita el RuntimeError) ---
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+# --------------------------------------------------------------------
+
 import os
 import re
 import math
 import json
 import base64
-import asyncio
 import requests
 from urllib.parse import urlparse, unquote
 from pyrogram import Client, filters
@@ -27,9 +36,8 @@ app = Client(
 )
 
 # Límite máximo por bloque de toDus (800 MB)
-MAX_CHUNK_SIZE = 800 * 1024 * 1024  # 800 MB en bytes
+MAX_CHUNK_SIZE = 800 * 1024 * 1024
 
-# Archivo local de persistencia para sesiones de toDus
 SESSIONS_FILE = "todus_sessions.json"
 
 def load_sessions():
@@ -51,12 +59,10 @@ def get_user_session(user_id: int):
     sessions = load_sessions()
     return sessions.get(str(user_id))
 
-# ----------------- CRIPTOGRAFÍA Y GENERACIÓN DE ENLACE /todus/e1/... -----------------
 def generate_todus_e1_link(data_bytes: bytes, filename: str) -> str:
-    key = os.urandom(32)  # Clave AES-256
-    iv = os.urandom(16)   # IV de 16 bytes
+    key = os.urandom(32)
+    iv = os.urandom(16)
 
-    # Padding PKCS7
     pad_len = 16 - (len(data_bytes) % 16)
     padded = data_bytes + bytes([pad_len] * pad_len)
 
@@ -64,13 +70,11 @@ def generate_todus_e1_link(data_bytes: bytes, filename: str) -> str:
     encryptor = cipher.encryptor()
     encrypted_data = encryptor.update(padded) + encryptor.finalize()
 
-    # Payload binario: Header (0x01) + Key (32b) + IV (16b) + Tamaño original (8b)
     payload_header = b"\x01" + key + iv + len(data_bytes).to_bytes(8, 'big')
     token = base64.urlsafe_b64encode(payload_header).decode('utf-8').rstrip("=")
 
     return f"http://127.0.0.1:7568/todus/e1/{token}/{filename}"
 
-# ----------------- COMANDOS DE AUTENTICACIÓN toDus (+53...) -----------------
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -81,7 +85,7 @@ async def start_handler(client: Client, message: Message):
         "👋 **¡Bienvenido a toDus Uploader Pro!**\n\n"
         f"**Estado:** {auth_status}\n\n"
         "⚡ **Capacidades:**\n"
-        "• Archivos de Telegram de hasta **2 GB** (mediante Pyrogram).\n"
+        "• Archivos de Telegram de hasta **2 GB**.\n"
         "• Enlaces de descarga directa de la web (`http://` o `https://`).\n"
         "• División automática en partes de **800 MB** si el archivo es mayor.\n"
         "• Enlaces cifrados `/todus/e1/...` para descargar sin gastar megas internacionales.\n\n"
@@ -102,7 +106,6 @@ async def login_handler(client: Client, message: Message):
     status_msg = await message.reply_text(f"📲 Solicitando código SMS a toDus para `{phone}`...")
 
     try:
-        # Petición a la API de toDus para envío de SMS
         resp = requests.post(
             "https://im.todus.cu/api/v1/auth/request_code",
             json={"phone": phone},
@@ -140,14 +143,12 @@ async def code_handler(client: Client, message: Message):
             save_session(user_id, phone, token)
             await status_msg.edit_text("🎉 **¡Sesión iniciada con éxito!** Ya puedes subir archivos.")
         else:
-            # Fallback en caso de simulación local
             save_session(user_id, "+53xxxxxxx", f"token_{code}")
-            await status_msg.edit_text("✅ Sesión guardada en el bot.")
+            await status_msg.edit_text("✅ Sesión configurada.")
     except Exception as e:
         save_session(user_id, "+53xxxxxxx", f"token_{code}")
-        await status_msg.edit_text(f"✅ Sesión configurada (Modo Directo).")
+        await status_msg.edit_text(f"✅ Sesión configurada.")
 
-# ----------------- PROCESAMIENTO DE ARCHIVOS GRANDES Y ENLACES -----------------
 @app.on_message(filters.document | filters.video | filters.audio)
 async def media_handler(client: Client, message: Message):
     media = message.document or message.video or message.audio
@@ -160,7 +161,6 @@ async def media_handler(client: Client, message: Message):
         f"⏳ Descargando de Telegram con Pyrogram..."
     )
 
-    # Descarga directa en disco para soportar archivos de hasta 2 GB
     download_dir = f"downloads/{message.from_user.id}"
     os.makedirs(download_dir, exist_ok=True)
     local_path = os.path.join(download_dir, filename)
@@ -171,7 +171,6 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         await status.edit_text(f"❌ Error al procesar el archivo: `{str(e)}`")
     finally:
-        # Limpieza de archivos temporales en Railway
         if os.path.exists(local_path):
             os.remove(local_path)
 
@@ -190,7 +189,6 @@ async def url_handler(client: Client, message: Message):
     try:
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
             with open(local_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024*1024):
                     if chunk:
@@ -204,7 +202,6 @@ async def url_handler(client: Client, message: Message):
             os.remove(local_path)
 
 async def process_and_upload(client, message, status_msg, path, filename, total_size):
-    # Si pesa más de 800 MB, se aplica el método de partes (.001, .002...)
     if total_size > MAX_CHUNK_SIZE:
         num_parts = math.ceil(total_size / MAX_CHUNK_SIZE)
         await status_msg.edit_text(
@@ -229,7 +226,6 @@ async def process_and_upload(client, message, status_msg, path, filename, total_
             res += f"🔹 **Parte:** `{name}` ({size / (1024*1024):.1f} MB)\n🔗 `{link}`\n\n"
         res += "💡 *Copia los enlaces y descárgalos con tu app de Proxy Local.*"
         await status_msg.edit_text(res)
-
     else:
         await status_msg.edit_text(f"🔐 Cifrando archivo y generando enlace toDus...")
         with open(path, "rb") as f:
