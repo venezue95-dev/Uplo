@@ -27,10 +27,8 @@ COPY modules/ ./modules/
 # Crear directorios persistentes.
 RUN mkdir -p /app/data /app/downloads
 
-# El bot usará estos volúmenes:
-# /app/data       -> sesión de Pyrogram + settings.json
-# /app/downloads  -> temporales (se borran al subir)
-VOLUME ["/app/data", "/app/downloads"]
+# Persistencia: en Railway se configura con un Volume montado en /app/data
+# (no se usa la instrucción VOLUME, Railway la prohíbe).
 
 # Comando por defecto.
 CMD ["python", "-u", "bot.py"]
