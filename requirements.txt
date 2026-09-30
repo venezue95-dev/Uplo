@@ -1,5 +1,14 @@
+# Cliente Pyrogram (Telegram)
 pyrogram==2.0.106
-tgcrypto==1.2.5
-requests==2.31.0
-cryptography==42.0.5
-urllib3==2.2.1
+TgCrypto==1.2.5
+
+# Cliente S3 (compatible con AWS S3, Cloudflare R2, Backblaze B2,
+# MinIO, Wasabi, DigitalOcean Spaces, Linode Object Storage, etc.)
+boto3==1.34.108
+botocore==1.34.108
+
+# Descarga de URLs en streaming
+requests==2.32.3
+
+# Carga de .env en desarrollo local (opcional en producción)
+python-dotenv==1.0.1

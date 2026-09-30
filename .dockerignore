@@ -1,0 +1,38 @@
+# Archivos que NO deben entrar en la imagen Docker.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Entorno
+.env
+.venv/
+venv/
+env/
+
+# Sesiones de Pyrogram (se montan como volumen).
+*.session
+*.session-journal
+
+# Datos runtime (se montan como volumen).
+data/
+downloads/
+settings.json
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs
+*.md
+.dockerignore
+Dockerfile
+docker-compose.yml
