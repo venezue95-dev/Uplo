@@ -2,7 +2,6 @@
 config.py
 ========
 Centraliza la lectura y validación de variables de entorno.
-
 Soporta cualquier almacenamiento compatible con S3:
 AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi,
 DigitalOcean Spaces, Linode Object Storage, etc.
@@ -37,7 +36,6 @@ def _split_ints(raw: str) -> List[int]:
 @dataclass
 class S3Config:
     """Configuración del bucket S3-compatible."""
-
     endpoint_url: Optional[str]
     region: str
     access_key: str
@@ -49,8 +47,9 @@ class S3Config:
     force_path_style: bool
 
     def validate(self) -> None:
-        if not self.access_key or not self.secret_key:
-            raise ValueError("ERROR: Faltan S3_ACCESS_KEY o S3_SECRET_KEY en el entorno.")
+        # Se desactiva la obligación de tener S3_ACCESS_KEY y S3_SECRET_KEY al arrancar:
+        # if not self.access_key or not self.secret_key:
+        #     raise ValueError("ERROR: Faltan S3_ACCESS_KEY o S3_SECRET_KEY en el entorno.")
         if not self.bucket:
             raise ValueError("ERROR: Falta S3_BUCKET en el entorno.")
         if self.presign_expiry < 0:
@@ -82,6 +81,7 @@ class AppConfig:
     owner_id: Optional[int]
     download_dir: str
     work_dir: str
+
     # Defaults for chunked uploader; can be overridden at runtime via /settings
     chunk_size_mb: int
     max_parallel: int
@@ -118,7 +118,6 @@ def _get_bool(key: str, default: bool = False) -> bool:
 
 def load_config() -> AppConfig:
     """Lee el entorno y devuelve un AppConfig validado."""
-
     tg = TelegramConfig(
         api_id=_get_int("API_ID", 0),
         api_hash=_get_str("API_HASH"),
