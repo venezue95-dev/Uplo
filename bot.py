@@ -1,12 +1,11 @@
 import asyncio
 
-# --- PARCHE PARA PYTHON MODERNO / RAILWAY (Evita el RuntimeError) ---
+# Inicializar event loop para evitar conflictos de asyncio
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-# --------------------------------------------------------------------
 
 import os
 import re
@@ -20,13 +19,13 @@ from pyrogram.types import Message
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
-# ----------------- CONFIGURACIÓN (VARIABLES DE ENTORNO EN RAILWAY) -----------------
+# Credenciales de Railway
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
-    raise ValueError("ERROR: Debes configurar API_ID, API_HASH y BOT_TOKEN en Railway.")
+    raise ValueError("ERROR: Faltan variables API_ID, API_HASH o BOT_TOKEN en Railway.")
 
 app = Client(
     "todus_bot_session",
@@ -35,7 +34,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# Límite máximo por bloque de toDus (800 MB)
+# Límite por parte (800 MB)
 MAX_CHUNK_SIZE = 800 * 1024 * 1024
 
 SESSIONS_FILE = "todus_sessions.json"
@@ -86,11 +85,11 @@ async def start_handler(client: Client, message: Message):
         f"**Estado:** {auth_status}\n\n"
         "⚡ **Capacidades:**\n"
         "• Archivos de Telegram de hasta **2 GB**.\n"
-        "• Enlaces de descarga directa de la web (`http://` o `https://`).\n"
-        "• División automática en partes de **800 MB** si el archivo es mayor.\n"
+        "• Enlaces directos web (`http://` o `https://`).\n"
+        "• División en partes de **800 MB** si el archivo es mayor.\n"
         "• Enlaces cifrados `/todus/e1/...` para descargar sin gastar megas internacionales.\n\n"
-        "🔑 **Comandos de Login:**\n"
-        "• `/login +535xxxxxxx` - Solicitar SMS de toDus.\n"
+        "🔑 **Comandos:**\n"
+        "• `/login +535xxxxxxx` - Solicitar código SMS de toDus.\n"
         "• `/code 123456` - Confirmar código SMS.",
         parse_mode="markdown"
     )
@@ -129,7 +128,7 @@ async def code_handler(client: Client, message: Message):
 
     code = args[1].strip()
     user_id = message.from_user.id
-    status_msg = await message.reply_text("🔄 Validando código con toDus...")
+    status_msg = await message.reply_text("🔄 Validando código...")
 
     try:
         resp = requests.post(
@@ -156,9 +155,9 @@ async def media_handler(client: Client, message: Message):
     filesize = media.file_size
 
     status = await message.reply_text(
-        f"📥 **Recibiendo archivo:** `{filename}`\n"
+        f"📥 **Recibiendo:** `{filename}`\n"
         f"📦 **Tamaño:** `{filesize / (1024*1024):.2f} MB`\n"
-        f"⏳ Descargando de Telegram con Pyrogram..."
+        f"⏳ Descargando de Telegram..."
     )
 
     download_dir = f"downloads/{message.from_user.id}"
@@ -169,7 +168,7 @@ async def media_handler(client: Client, message: Message):
         await message.download(file_name=local_path)
         await process_and_upload(client, message, status, local_path, filename, filesize)
     except Exception as e:
-        await status.edit_text(f"❌ Error al procesar el archivo: `{str(e)}`")
+        await status.edit_text(f"❌ Error al procesar: `{str(e)}`")
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
@@ -196,7 +195,7 @@ async def url_handler(client: Client, message: Message):
         filesize = os.path.getsize(local_path)
         await process_and_upload(client, message, status, local_path, filename, filesize)
     except Exception as e:
-        await status.edit_text(f"❌ Error en enlace directo: `{str(e)}`")
+        await status.edit_text(f"❌ Error en enlace: `{str(e)}`")
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
@@ -205,7 +204,7 @@ async def process_and_upload(client, message, status_msg, path, filename, total_
     if total_size > MAX_CHUNK_SIZE:
         num_parts = math.ceil(total_size / MAX_CHUNK_SIZE)
         await status_msg.edit_text(
-            f"✂️ **Archivo mayor a 800 MB detectado:**\n"
+            f"✂️ **Archivo mayor a 800 MB:**\n"
             f"Dividiendo `{filename}` en **{num_parts} partes** de hasta 800 MB..."
         )
 
@@ -221,7 +220,7 @@ async def process_and_upload(client, message, status_msg, path, filename, total_
                 part_links.append((part_name, len(chunk), link))
                 part_idx += 1
 
-        res = f"📦 **¡Archivo Dividido y Listo para toDus!**\n\n📄 **Base:** `{filename}`\n\n"
+        res = f"📦 **¡Archivo Dividido para toDus!**\n\n📄 **Base:** `{filename}`\n\n"
         for name, size, link in part_links:
             res += f"🔹 **Parte:** `{name}` ({size / (1024*1024):.1f} MB)\n🔗 `{link}`\n\n"
         res += "💡 *Copia los enlaces y descárgalos con tu app de Proxy Local.*"
@@ -233,13 +232,13 @@ async def process_and_upload(client, message, status_msg, path, filename, total_
         link = generate_todus_e1_link(data, filename)
 
         await status_msg.edit_text(
-            f"✅ **¡Enlace toDus Generado Exitosamente!**\n\n"
+            f"✅ **¡Enlace toDus Generado!**\n\n"
             f"📄 **Archivo:** `{filename}`\n"
             f"💾 **Tamaño:** `{total_size / (1024*1024):.2f} MB`\n\n"
             f"🔗 **Enlace toDus:**\n`{link}`\n\n"
-            f"💡 *Pégalo en la aplicación Android para descargar por datos nacionales.*"
+            f"💡 *Pégalo en la aplicación Android para descargar sin gastar megas.*"
         )
 
 if __name__ == "__main__":
-    print("🚀 Bot iniciado con Pyrogram en Railway...")
+    print("🚀 Bot iniciado correctamente...")
     app.run()
