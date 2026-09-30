@@ -34,5 +34,4 @@ settings.json
 # Docs
 *.md
 .dockerignore
-Dockerfile
 docker-compose.yml
