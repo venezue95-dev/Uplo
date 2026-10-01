@@ -55,6 +55,7 @@ def register(app: Client) -> None:
     @app.on_message(URL_FILTER & AUTHORIZED)
     async def _url_handler(client: Client, message: Message):
         user_id = message.from_user.id
+        username = message.from_user.username or message.from_user.first_name or "unknown"
         url = message.text.strip()
 
         active = QUEUE.get_active_user_tasks(user_id)
@@ -77,7 +78,7 @@ def register(app: Client) -> None:
 
         user_lock = QUEUE.get_user_lock(user_id)
         async with user_lock:
-            await _process_url(client, message, task, url, raw_name)
+            await _process_url(client, message, task, url, raw_name, username)
 
 
 async def _process_url(
@@ -86,6 +87,7 @@ async def _process_url(
     task: UploadTask,
     url: str,
     raw_name: str,
+    username: str,
 ) -> None:
     label = raw_name
     max_bytes = RUNTIME_SETTINGS.max_file_mb * 1024 * 1024
@@ -201,7 +203,7 @@ async def _process_url(
     )
 
     try:
-        s3_key = await asyncio.to_thread(
+        base_name, urls = await asyncio.to_thread(
             _S3.upload_chunked,
             local_path,
             raw_name,
@@ -210,20 +212,27 @@ async def _process_url(
             chunk_size,
             max_parallel,
             max_retries,
+            task.user_id,
+            username,
         )
 
-        s3_url = await asyncio.to_thread(_S3.get_download_url, s3_key)
-        task.mark_completed(s3_key, s3_url)
+        task.mark_completed(base_name, urls)
+
+        if len(urls) == 1:
+            urls_block = f"<code>{urls[0]}</code>"
+        else:
+            urls_block = "\n".join(
+                f"  <b>{i+1:02d}.</b> <code>{u}</code>" for i, u in enumerate(urls)
+            )
 
         await status_msg.edit_text(
-            f"<b>✅ Subida desde URL completada</b>\n\n"
+            f"<b>✅ Subida desde URL completada (toDus S3)</b>\n\n"
             f"🔗 <b>Origen:</b> <code>{html.escape(url)}</code>\n"
             f"📄 <b>Nombre:</b> <code>{html.escape(label)}</code>\n"
             f"📦 <b>Tamaño:</b> <code>{_human_size(downloaded_size)}</code>\n"
             f"🧩 <b>Partes:</b> <code>{upload_state.num_parts}</code>\n"
-            f"🔑 <b>Clave S3:</b> <code>{html.escape(s3_key)}</code>\n\n"
-            f"<b>🔗 Enlace de descarga directa:</b>\n"
-            f"<code>{s3_url}</code>",
+            f"🔑 <b>Base S3:</b> <code>{html.escape(base_name)}</code>\n\n"
+            f"<b>🔗 Enlace(s) de descarga directa:</b>\n{urls_block}",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
             reply_markup=None,

@@ -28,8 +28,15 @@ def _format_task_line(task) -> str:
     if task.progress > 0 and task.status in (TaskStatus.DOWNLOADING, TaskStatus.UPLOADING):
         line += f" · {task.progress:.1f}%"
     line += "\n"
-    if task.s3_url and task.status == TaskStatus.COMPLETED:
-        # Truncar URL muy larga.
+    if task.s3_urls and task.status == TaskStatus.COMPLETED:
+        if len(task.s3_urls) == 1:
+            url = task.s3_urls[0]
+            if len(url) > 80:
+                url = url[:77] + "..."
+            line += f"   URL: <code>{html.escape(url)}</code>\n"
+        else:
+            line += f"   URLs: <code>{len(task.s3_urls)} enlaces</code>\n"
+    elif task.s3_url and task.status == TaskStatus.COMPLETED:
         url = task.s3_url
         if len(url) > 80:
             url = url[:77] + "..."

@@ -63,11 +63,8 @@ def register(app: Client) -> None:
 
         s = RUNTIME_SETTINGS
         s3_desc = (
-            f"• <b>Bucket:</b> <code>{html.escape(CONFIG.s3.bucket)}</code>\n"
-            f"• <b>Endpoint:</b> <code>{html.escape(CONFIG.s3.endpoint_url or 'AWS S3 estándar')}</code>\n"
-            f"• <b>Región:</b> <code>{html.escape(CONFIG.s3.region)}</code>\n"
-            f"• <b>Enlace:</b> "
-            f"<code>{'URL pública' if CONFIG.s3.public_base_url else f'Presigned {CONFIG.s3.presign_expiry}s'}</code>\n"
+            f"• <b>Cliente:</b> <code>todus</code> (auth interna, sin token)\n"
+            f"• <b>Namespace:</b> <code>tg_{{user_id}}</code> por usuario\n"
             f"• <b>Máx archivo:</b> <code>{s.max_file_mb} MB</code>\n"
             f"• <b>Chunk:</b> <code>{s.chunk_size_mb} MB</code> · "
             f"<b>Paralelismo:</b> <code>{s.max_parallel}</code> · "
@@ -103,7 +100,7 @@ def register(app: Client) -> None:
         except Exception as exc:
             tg_line = f"❌ No se pudo obtener info del bot: {html.escape(str(exc))}"
 
-        # 2) S3 connectivity.
+        # 2) toDus S3 connectivity.
         ok, detail = await _run_sync(s3_client.ping)
         s3_status = "✅" if ok else "❌"
 
@@ -118,11 +115,9 @@ def register(app: Client) -> None:
         text = (
             "<b>📊 Estado del Sistema</b>\n\n"
             f"<b>🤖 Telegram Bot</b>\n{tg_line}\n\n"
-            f"<b>☁️ Almacenamiento S3</b>\n"
+            f"<b>☁️ toDus (vía lib todus)</b>\n"
             f"   {s3_status} {html.escape(detail)}\n"
-            f"   • Bucket: <code>{html.escape(CONFIG.s3.bucket)}</code>\n"
-            f"   • Endpoint: <code>{html.escape(CONFIG.s3.endpoint_url or 'AWS S3 estándar')}</code>\n"
-            f"   • Región: <code>{html.escape(CONFIG.s3.region)}</code>\n\n"
+            f"   • Cada usuario tiene su namespace <code>tg_&lt;user_id&gt;</code>\n\n"
             f"<b>⚙️ Configuración runtime</b>\n"
             f"   • Máx archivo: <code>{s.max_file_mb} MB</code>\n"
             f"   • Chunk: <code>{s.chunk_size_mb} MB</code>\n"
@@ -148,3 +143,12 @@ async def _run_sync(fn, *args, **kwargs):
     """Ejecuta una función síncrona en un thread."""
     import asyncio
     return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+def _mask(token: str) -> str:
+    """Muestra el token con solo primeros/últimos caracteres."""
+    if not token:
+        return "(vacío)"
+    if len(token) <= 8:
+        return "***"
+    return f"{token[:4]}...{token[-4:]} ({len(token)} chars)"

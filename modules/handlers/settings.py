@@ -26,6 +26,15 @@ from modules.runtime_settings import (
 from .basic import AUTHORIZED, is_owner
 
 
+def _mask_token(token: str) -> str:
+    """Muestra el token con solo primeros/últimos caracteres."""
+    if not token:
+        return "(vacío)"
+    if len(token) <= 8:
+        return "***"
+    return f"{token[:4]}...{token[-4:]} ({len(token)} chars)"
+
+
 def _settings_text() -> str:
     s = RUNTIME_SETTINGS
     return (
@@ -36,9 +45,8 @@ def _settings_text() -> str:
         f"🔁 <b>Reintentos por chunk:</b> <code>{s.max_retries}</code>\n\n"
         "<b>🔒 Sistema</b>\n"
         f"• Modo: <code>{'Privado' if CONFIG.allowed_users else 'Público'}</code>\n"
-        f"• Bucket: <code>{CONFIG.s3.bucket}</code>\n"
-        f"• Endpoint: <code>{CONFIG.s3.endpoint_url or 'AWS S3'}</code>\n"
-        f"• Enlace: <code>{'URL pública' if CONFIG.s3.public_base_url else f'Presigned {CONFIG.s3.presign_expiry}s'}</code>\n\n"
+        f"• Cliente toDus: <code>lib todus (auth interna)</code>\n"
+        f"• Namespace: <code>tg_&lt;user_id&gt;</code> por usuario\n\n"
         "<i>Toca un botón para cambiar (solo owner).</i>"
     )
 

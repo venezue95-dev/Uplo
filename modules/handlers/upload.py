@@ -56,6 +56,7 @@ def register(app: Client) -> None:
     )
     async def _media_handler(client: Client, message: Message):
         user_id = message.from_user.id
+        username = message.from_user.username or message.from_user.first_name or "unknown"
 
         # Si el usuario tiene ya una tarea en curso, encolar la nueva.
         active = QUEUE.get_active_user_tasks(user_id)
@@ -78,10 +79,16 @@ def register(app: Client) -> None:
             source="telegram",
         )
 
+        # Guardar username para que el handler lo use al subir.
+        task.chat_id = message.chat.id
+        task.status_msg_id = None
+        # Stash username en el objeto task (campo extra).
+        setattr(task, "_username", username)
+
         # Adquirir lock por usuario -> cola FIFO.
         user_lock = QUEUE.get_user_lock(user_id)
         async with user_lock:
-            await _process_upload(client, message, task, raw_name, filesize)
+            await _process_upload(client, message, task, raw_name, filesize, username)
 
 
 async def _process_upload(
@@ -90,6 +97,7 @@ async def _process_upload(
     task: UploadTask,
     raw_name: str,
     filesize: int,
+    username: str,
 ) -> None:
     """Lógica completa de descarga + subida con cola y reintentos."""
     user_id = task.user_id
@@ -202,7 +210,7 @@ async def _process_upload(
     try:
         # Ejecutar subida chunked en un thread.
         loop = asyncio.get_event_loop()
-        s3_key = await asyncio.to_thread(
+        base_name, urls = await asyncio.to_thread(
             _S3.upload_chunked,
             local_path,
             raw_name,
@@ -211,22 +219,27 @@ async def _process_upload(
             chunk_size,
             max_parallel,
             max_retries,
+            user_id,
+            username,
         )
 
-        # Generar enlace directo.
-        s3_url = await asyncio.to_thread(_S3.get_download_url, s3_key)
+        task.mark_completed(base_name, urls)
 
-        task.mark_completed(s3_key, s3_url)
+        # Mensaje final: si hay 1 URL -> simple; si hay varias -> lista.
+        if len(urls) == 1:
+            urls_block = f"<code>{urls[0]}</code>"
+        else:
+            urls_block = "\n".join(
+                f"  <b>{i+1:02d}.</b> <code>{u}</code>" for i, u in enumerate(urls)
+            )
 
-        # Quitar botón de cancelar y mostrar resultado.
         await status_msg.edit_text(
-            f"<b>✅ Archivo subido correctamente</b>\n\n"
+            f"<b>✅ Archivo subido a toDus S3</b>\n\n"
             f"📄 <b>Nombre:</b> <code>{html.escape(label)}</code>\n"
             f"📦 <b>Tamaño:</b> <code>{_human_size(downloaded_size)}</code>\n"
             f"🧩 <b>Partes:</b> <code>{upload_state.num_parts}</code>\n"
-            f"🔑 <b>Clave S3:</b> <code>{html.escape(s3_key)}</code>\n\n"
-            f"<b>🔗 Enlace de descarga directa:</b>\n"
-            f"<code>{s3_url}</code>",
+            f"🔑 <b>Base S3:</b> <code>{html.escape(base_name)}</code>\n\n"
+            f"<b>🔗 Enlace(s) de descarga directa:</b>\n{urls_block}",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
             reply_markup=None,
