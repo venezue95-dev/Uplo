@@ -63,6 +63,7 @@ class UploadTask:
     error: Optional[str] = None
     s3_key: Optional[str] = None
     s3_url: Optional[str] = None
+    s3_urls: List[str] = field(default_factory=list)  # todas las URLs de partes
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -83,9 +84,11 @@ class UploadTask:
     def mark_started(self) -> None:
         self.started_at = time.time()
 
-    def mark_completed(self, s3_key: str, s3_url: str) -> None:
-        self.s3_key = s3_key
-        self.s3_url = s3_url
+    def mark_completed(self, base_name: str, urls: List[str]) -> None:
+        self.s3_key = base_name
+        self.s3_urls = list(urls)
+        # Para retro-compatibilidad: la primera URL si solo hay una, vacío si varias.
+        self.s3_url = urls[0] if len(urls) == 1 else ""
         self.status = TaskStatus.COMPLETED
         self.completed_at = time.time()
 

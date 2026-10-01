@@ -26,7 +26,9 @@ SETTINGS_FILE = "settings.json"
 # Opciones ciclablables por el menú /settings.
 CYCLE_OPTIONS = {
     "max_file_mb": [500, 800, 1000, 2000],
-    "chunk_size_mb": [5, 8, 16, 32],
+    # Con la librería todus, cada chunk es un archivo completo en el namespace.
+    # Chunks más grandes = menos URLs pero menos granularidad de progreso.
+    "chunk_size_mb": [10, 50, 100, 200, 800],
     "max_parallel": [1, 2, 3, 5],
     "max_retries": [5, 10, 15, 20],
 }
@@ -46,7 +48,7 @@ class RuntimeSettings:
         self._lock = threading.Lock()
         self._values = {
             "max_file_mb": 800,
-            "chunk_size_mb": 8,
+            "chunk_size_mb": 50,
             "max_parallel": 3,
             "max_retries": 10,
         }

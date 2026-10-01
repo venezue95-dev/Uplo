@@ -1,43 +1,47 @@
 """
 s3_client.py
 ============
-Cliente S3-compatible con:
+Wrapper sobre la librería `todus` (https://github.com/nyxthor-dev/todus-client).
 
-1. Subida chunked (multipart upload) con paralelismo y reintentos.
-2. Generación de enlace directo (URL pública estática o presignada).
-3. Borrado de objetos.
-4. Verificación de conectividad (head_bucket) para /status.
+La librería gestiona internamente la autenticación con s3.todus.cu:
+**NO se necesita token ni credenciales en el .env**.
 
-Compatible con AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi,
-DigitalOcean Spaces, etc.
+Cada usuario de Telegram tiene su propio namespace `tg_<user_id>`,
+creado automáticamente la primera vez que sube un archivo.
+
+Para archivos grandes, se dividen en chunks y se suben en paralelo
+como archivos separados (cada chunk via `ns.upload()`), ya que la
+librería no expone chunked upload nativo. Cada chunk recibe su
+propia share URL.
+
+Subida con:
+- Paralelismo (ThreadPoolExecutor, max_workers=S3_MAX_PARALLEL).
+- Reintentos por chunk (hasta S3_MAX_RETRIES) con backoff exponencial.
+- Cancelación cooperativa (task.is_cancelled).
 """
 
 from __future__ import annotations
 
-import io
 import math
-import mimetypes
 import os
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-import boto3
-from botocore.client import Config as BotoConfig
-from botocore.exceptions import BotoCoreError, ClientError
+from todus import NamespaceManager
 
-from config import S3Config
+from config import CONFIG
 from .progress import ProgressState
 from .queue import UploadTask
 
 
 # ----------------------------------------------------------------------
-# Excepciones
+# Excepciones (mismos nombres que antes para compat con handlers)
 # ----------------------------------------------------------------------
 class S3Error(RuntimeError):
-    """Error específico de S3."""
+    """Error específico del cliente toDus."""
 
 
 class ChunkUploadError(S3Error):
@@ -61,76 +65,82 @@ class UploadCancelled(Exception):
 # Especificación de parte (chunk).
 # ----------------------------------------------------------------------
 class PartSpec:
-    __slots__ = ("part_number", "offset", "length")
+    __slots__ = ("part_number", "offset", "length", "original_name")
 
-    def __init__(self, part_number: int, offset: int, length: int):
+    def __init__(self, part_number: int, offset: int, length: int, original_name: str):
         self.part_number = part_number
         self.offset = offset
         self.length = length
+        self.original_name = original_name
 
 
 # ----------------------------------------------------------------------
-# Cliente base.
+# Cliente toDus (wrapper sobre NamespaceManager).
 # ----------------------------------------------------------------------
 class S3Client:
-    """Cliente boto3 + helpers de URL."""
+    """Cliente toDus basado en la librería `todus`."""
 
-    def __init__(self, cfg: S3Config):
-        self._cfg = cfg
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=cfg.endpoint_url or None,
-            region_name=cfg.region or "us-east-1",
-            aws_access_key_id=cfg.access_key,
-            aws_secret_access_key=cfg.secret_key,
-            config=BotoConfig(
-                s3={"addressing_style": "path" if cfg.force_path_style else "auto"},
-                retries={"max_attempts": 5, "mode": "adaptive"},
-                connect_timeout=10,
-                read_timeout=120,
-            ),
-        )
+    _manager: Optional[NamespaceManager] = None
+    _manager_lock = threading.Lock()
+    # Caché de namespaces por usuario (thread-safe).
+    _ns_cache: dict = {}
+    _ns_lock = threading.Lock()
+
+    def __init__(self, cfg=None) -> None:
+        """
+        El argumento `cfg` (S3Config) se acepta por compatibilidad con
+        los handlers que lo pasan, pero la librería todus gestiona todo
+        internamente. No se necesita ninguna configuración del lado del bot.
+        """
+        # Forzamos la inicialización del NamespaceManager para fallar temprano
+        # si la librería no está instalada correctamente.
+        self._get_manager()
 
     # ------------------------------------------------------------------
-    # Utilidades estáticas.
+    # Singleton NamespaceManager.
     # ------------------------------------------------------------------
-    @staticmethod
-    def _unique_key(prefix: str, filename: str) -> str:
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        short_id = uuid.uuid4().hex[:8]
-        safe_name = os.path.basename(filename.replace("\\", "/")).replace(" ", "_")
-        return f"{prefix.strip('/')}/{ts}-{short_id}/{safe_name}"
+    @classmethod
+    def _get_manager(cls) -> NamespaceManager:
+        """NamespaceManager singleton. La auth va por dentro de la lib."""
+        if cls._manager is None:
+            with cls._manager_lock:
+                if cls._manager is None:
+                    cls._manager = NamespaceManager()
+        return cls._manager
 
-    @staticmethod
-    def _guess_extra_args(filename: str) -> dict:
-        content_type, _ = mimetypes.guess_type(filename)
-        extra = {}
-        if content_type:
-            extra["ContentType"] = content_type
-        if not content_type or content_type in (
-            "application/zip",
-            "application/x-tar",
-            "application/x-rar-compressed",
-            "application/octet-stream",
-        ) or content_type.startswith("application/"):
-            extra["ContentDisposition"] = "attachment"
-        return extra
+    def _get_namespace(self, user_id: int, username: str):
+        """Obtiene o crea el namespace `tg_<user_id>` del usuario."""
+        ns_name = f"tg_{user_id}"
+        with self._ns_lock:
+            if ns_name in self._ns_cache:
+                return self._ns_cache[ns_name]
+
+        manager = self._get_manager()
+        try:
+            if not manager.exists(ns_name):
+                manager.create(ns_name, description=f"@{username or 'unknown'}")
+            ns = manager.get_namespace(ns_name)
+        except Exception as exc:
+            raise S3Error(f"Error creando/obteniendo namespace {ns_name}: {exc}") from exc
+
+        with self._ns_lock:
+            self._ns_cache[ns_name] = ns
+        return ns
 
     # ------------------------------------------------------------------
     # Conectividad (para /status).
     # ------------------------------------------------------------------
     def ping(self) -> Tuple[bool, str]:
-        """Comprueba acceso al bucket. Devuelve (ok, mensaje)."""
+        """Verifica que NamespaceManager responde. No verifica token."""
         try:
-            self._client.head_bucket(Bucket=self._cfg.bucket)
-            return True, f"Bucket '{self._cfg.bucket}' accesible"
-        except (BotoCoreError, ClientError) as exc:
-            return False, f"Error accediendo al bucket: {exc}"
+            manager = self._get_manager()
+            # Si el manager se construye sin lanzar, la lib está OK.
+            return True, "todus client listo (auth gestionada por la librería)"
         except Exception as exc:
-            return False, f"Error inesperado: {exc}"
+            return False, f"Error inicializando todus: {exc}"
 
     # ------------------------------------------------------------------
-    # Subida chunked.
+    # Subida chunked (chunks = archivos separados en el namespace).
     # ------------------------------------------------------------------
     def upload_chunked(
         self,
@@ -141,138 +151,122 @@ class S3Client:
         chunk_size: int,
         max_parallel: int,
         max_retries: int,
-    ) -> str:
+        user_id: int,
+        username: str,
+    ) -> Tuple[str, List[str]]:
         """
-        Subida multipart con paralelismo y reintentos por chunk.
-        Devuelve la clave S3 final. Lanza ChunkUploadError / UploadCancelled.
+        Sube el archivo por chunks paralelos usando ns.upload().
+
+        Cada chunk se escribe a un archivo temporal y se sube con
+        `ns.upload(local_path=..., path='telegram', original_name=..., metadata={...})`.
+        Tras subir, se genera la share URL de cada parte con
+        `ns.share_url(key).url`.
+
+        Devuelve (base_name, [share_urls]).
         """
         file_size = os.path.getsize(local_path)
-        chunk_size = max(chunk_size, 5 * 1024 * 1024)  # mínimo S3 multipart
         num_parts = math.ceil(file_size / chunk_size) or 1
         state.set_num_parts(num_parts)
         task.total_parts = num_parts
 
-        key = self._unique_key(self._cfg.prefix, original_name)
-        extra_args = self._guess_extra_args(original_name)
+        base_name = self._unique_base_name(original_name)
 
-        # 1) Crear multipart upload.
-        try:
-            create_resp = self._client.create_multipart_upload(
-                Bucket=self._cfg.bucket,
-                Key=key,
-                **extra_args,
-            )
-            upload_id = create_resp["UploadId"]
-        except (BotoCoreError, ClientError) as exc:
-            raise S3Error(f"Error al iniciar multipart upload: {exc}") from exc
+        # Generar specs de partes.
+        parts: List[PartSpec] = []
+        for i in range(num_parts):
+            offset = i * chunk_size
+            length = min(chunk_size, file_size - offset)
+            # Si solo hay 1 parte, no añadir sufijo .part.NNN.
+            if num_parts == 1:
+                part_name = original_name
+            else:
+                ext = os.path.splitext(original_name)[1]
+                stem = os.path.splitext(original_name)[0]
+                part_name = f"{stem}.part{i+1:03d}{ext}"
+            parts.append(PartSpec(
+                part_number=i + 1,
+                offset=offset,
+                length=length,
+                original_name=part_name,
+            ))
 
-        # 2) Subir partes en paralelo.
+        # Subir en paralelo con reintentos.
         try:
-            completed_parts = self._upload_all_parts(
-                key=key,
-                upload_id=upload_id,
+            keys = self._upload_all_parts(
+                parts=parts,
                 local_path=local_path,
-                file_size=file_size,
-                chunk_size=chunk_size,
-                num_parts=num_parts,
                 task=task,
                 state=state,
                 max_parallel=max_parallel,
                 max_retries=max_retries,
+                user_id=user_id,
+                username=username,
             )
-
-            # 3) Completar multipart.
-            self._client.complete_multipart_upload(
-                Bucket=self._cfg.bucket,
-                Key=key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": completed_parts},
-            )
-        except (UploadCancelled, ChunkUploadError, S3Error):
-            # Abortar multipart para no dejar partes huérfanas.
-            try:
-                self._client.abort_multipart_upload(
-                    Bucket=self._cfg.bucket,
-                    Key=key,
-                    UploadId=upload_id,
-                )
-            except Exception:
-                pass
-            raise
-        except Exception:
-            try:
-                self._client.abort_multipart_upload(
-                    Bucket=self._cfg.bucket,
-                    Key=key,
-                    UploadId=upload_id,
-                )
-            except Exception:
-                pass
+        except (UploadCancelled, ChunkUploadError):
             raise
 
-        return key
+        # Generar share URLs para cada parte.
+        try:
+            ns = self._get_namespace(user_id, username)
+            urls: List[str] = []
+            for key in keys:
+                share = ns.share_url(key)
+                urls.append(share.url if hasattr(share, "url") else str(share))
+        except Exception as exc:
+            raise S3Error(f"Error generando share URLs: {exc}") from exc
+
+        return base_name, urls
 
     def _upload_all_parts(
         self,
-        key: str,
-        upload_id: str,
+        parts: List[PartSpec],
         local_path: str,
-        file_size: int,
-        chunk_size: int,
-        num_parts: int,
         task: UploadTask,
         state: ProgressState,
         max_parallel: int,
         max_retries: int,
-    ) -> list:
-        """Sube todas las partes en paralelo y devuelve lista para Complete."""
-        completed = [None] * num_parts
+        user_id: int,
+        username: str,
+    ) -> List[str]:
+        completed: List[Optional[str]] = [None] * len(parts)
         failed_info = None  # (part, worker_id, ChunkUploadError)
 
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             futures = {}
-            for i in range(num_parts):
+            for i, part in enumerate(parts):
                 if task.is_cancelled:
                     raise UploadCancelled()
-                offset = i * chunk_size
-                length = min(chunk_size, file_size - offset)
-                part = PartSpec(i + 1, offset, length)
-                worker_id = i % max_parallel  # identificador estable por slot
+                worker_id = i % max_parallel
                 fut = pool.submit(
                     self._upload_part_with_retry,
-                    key=key,
-                    upload_id=upload_id,
                     part=part,
                     local_path=local_path,
                     task=task,
                     state=state,
                     worker_id=worker_id,
                     max_retries=max_retries,
+                    user_id=user_id,
+                    username=username,
                 )
                 futures[fut] = (part, worker_id)
 
             for fut in as_completed(futures):
                 part, worker_id = futures[fut]
                 try:
-                    etag, attempts = fut.result()
-                    completed[part.part_number - 1] = {
-                        "PartNumber": part.part_number,
-                        "ETag": etag,
-                    }
+                    key = fut.result()
+                    completed[part.part_number - 1] = key
                     state.part_completed(part.part_number)
                 except UploadCancelled:
                     raise
                 except ChunkUploadError as exc:
                     failed_info = (part, worker_id, exc)
-                    # Cancelar el resto
                     for f in futures:
                         if not f.done():
                             f.cancel()
                     break
                 except Exception as exc:
                     failed_info = (
-                        part,
-                        worker_id,
+                        part, worker_id,
                         ChunkUploadError(
                             part_label=f"worker_{worker_id}",
                             attempts=max_retries,
@@ -298,82 +292,117 @@ class S3Client:
 
     def _upload_part_with_retry(
         self,
-        key: str,
-        upload_id: str,
         part: PartSpec,
         local_path: str,
         task: UploadTask,
         state: ProgressState,
         worker_id: int,
         max_retries: int,
-    ) -> Tuple[str, int]:
-        """Sube una parte con hasta max_retries intentos. Devuelve (ETag, intentos)."""
+        user_id: int,
+        username: str,
+    ) -> str:
+        """
+        Sube una parte con hasta max_retries intentos usando ns.upload().
+
+        Como ns.upload() toma un local_path, escribimos el chunk a un
+        archivo temporal y lo subimos. Tras subir, borramos el temporal.
+        """
+        # Escribir el chunk a un archivo temporal.
+        tmp_dir = os.path.join(CONFIG.download_dir, str(user_id), "chunks")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_path = os.path.join(tmp_dir, f"chunk_{part.part_number:03d}_{uuid.uuid4().hex[:8]}.bin")
+
+        try:
+            with open(local_path, "rb") as src:
+                src.seek(part.offset)
+                data = src.read(part.length)
+            with open(tmp_path, "wb") as dst:
+                dst.write(data)
+        except Exception as exc:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise ChunkUploadError(
+                part_label=f"worker_{worker_id}",
+                attempts=0,
+                max_attempts=max_retries,
+                error=f"Error leyendo chunk: {exc}",
+            )
+
         last_error = "Unknown error"
         attempts = 0
 
-        for attempt in range(1, max_retries + 1):
-            if task.is_cancelled:
-                raise UploadCancelled()
-
-            attempts = attempt
-            state.part_started(part.part_number)
-            try:
-                # Leer chunk desde disco.
-                with open(local_path, "rb") as f:
-                    f.seek(part.offset)
-                    data = f.read(part.length)
-
-                # Subir parte.
-                resp = self._client.upload_part(
-                    Bucket=self._cfg.bucket,
-                    Key=key,
-                    PartNumber=part.part_number,
-                    UploadId=upload_id,
-                    Body=data,
-                    ContentLength=len(data),
-                )
-                state.add_bytes(len(data))
-                return resp["ETag"], attempts
-            except (BotoCoreError, ClientError, IOError, OSError) as exc:
-                last_error = str(exc) or exc.__class__.__name__
-                # Backoff exponencial con tope de 30s.
-                time.sleep(min(2 ** attempt, 30))
-            except Exception as exc:
-                last_error = str(exc) or exc.__class__.__name__
-                time.sleep(min(2 ** attempt, 30))
-
-        raise ChunkUploadError(
-            part_label=f"worker_{worker_id}",
-            attempts=attempts,
-            max_attempts=max_retries,
-            error=last_error,
-        )
-
-    # ------------------------------------------------------------------
-    # Generación de enlace directo.
-    # ------------------------------------------------------------------
-    def get_download_url(self, key: str) -> str:
-        if self._cfg.public_base_url:
-            base = self._cfg.public_base_url.rstrip("/")
-            return f"{base}/{key.lstrip('/')}"
-
-        if self._cfg.presign_expiry <= 0:
-            return f"s3://{self._cfg.bucket}/{key}"
-
         try:
-            return self._client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self._cfg.bucket, "Key": key},
-                ExpiresIn=self._cfg.presign_expiry,
+            for attempt in range(1, max_retries + 1):
+                if task.is_cancelled:
+                    raise UploadCancelled()
+
+                attempts = attempt
+                state.part_started(part.part_number)
+
+                try:
+                    ns = self._get_namespace(user_id, username)
+                    result = ns.upload(
+                        local_path=tmp_path,
+                        path="telegram",
+                        original_name=part.original_name,
+                        metadata={
+                            "part": str(part.part_number),
+                            "total": str(state.num_parts),
+                            "base": "telegram-bot",
+                        },
+                    )
+                    state.add_bytes(part.length)
+                    return result.key
+                except Exception as exc:
+                    last_error = str(exc) or exc.__class__.__name__
+                    # Backoff exponencial con tope de 30s.
+                    time.sleep(min(2 ** attempt, 30))
+
+            raise ChunkUploadError(
+                part_label=f"worker_{worker_id}",
+                attempts=attempts,
+                max_attempts=max_retries,
+                error=last_error,
             )
-        except (BotoCoreError, ClientError) as exc:
-            raise S3Error(f"Error al generar enlace firmado: {exc}") from exc
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
-    # Borrado.
+    # Generación de nombre único (sin path separators).
     # ------------------------------------------------------------------
-    def delete_object(self, key: str) -> None:
+    @staticmethod
+    def _unique_base_name(original_name: str) -> str:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        short_id = uuid.uuid4().hex[:8]
+        safe = "".join(c for c in original_name if c.isalnum() or c in "._-") or "archivo"
+        return f"{ts}-{short_id}-{safe}"
+
+    # ------------------------------------------------------------------
+    # URL pública (deprecated - usar las URLs devueltas por upload_chunked).
+    # ------------------------------------------------------------------
+    def get_download_url(self, key: str, user_id: int = 0, username: str = "") -> str:
+        """Genera la share URL de un key ya subido."""
+        if user_id:
+            try:
+                ns = self._get_namespace(user_id, username)
+                share = ns.share_url(key)
+                return share.url if hasattr(share, "url") else str(share)
+            except Exception as exc:
+                raise S3Error(f"Error generando share URL: {exc}") from exc
+        return f"s3://todus/{key}"
+
+    def delete_object(self, key: str, user_id: int = 0, username: str = "") -> None:
+        """Borra un objeto del namespace del usuario (si la lib lo permite)."""
+        if not user_id:
+            raise S3Error("Se requiere user_id para borrar un objeto del namespace")
         try:
-            self._client.delete_object(Bucket=self._cfg.bucket, Key=key)
-        except (BotoCoreError, ClientError) as exc:
+            ns = self._get_namespace(user_id, username)
+            if hasattr(ns, "delete"):
+                ns.delete(key)
+        except Exception as exc:
             raise S3Error(f"Error al borrar {key}: {exc}") from exc
