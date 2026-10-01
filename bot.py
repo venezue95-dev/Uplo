@@ -61,14 +61,14 @@ def main() -> int:
     app = build_app()
     register_handlers(app)
 
-    s3 = CONFIG.s3
     log.info(
-        "S3 → bucket=%s | endpoint=%s | región=%s | enlace=%s",
-        s3.bucket,
-        s3.endpoint_url or "AWS",
-        s3.region,
-        "public_base_url" if s3.public_base_url else f"presign({s3.presign_expiry}s)",
+        "Storage → toDus S3 (auth gestionada por la librería todus) | "
+        "chunk=%dMB | paralelo=%d | reintentos=%d",
+        CONFIG.chunk_size_mb,
+        CONFIG.max_parallel,
+        CONFIG.max_retries,
     )
+
     if CONFIG.allowed_users:
         log.info(
             "Modo privado | usuarios autorizados: %s",
