@@ -64,20 +64,31 @@ Si lo dejas vacío, **cualquiera** que hable con tu bot podrá subir archivos.
 
 ---
 
-## 5. S3_ACCESS_KEY y S3_SECRET_KEY (credenciales toDus)
+## 5. toDus (sin credenciales necesarias)
 
-Estas son las credenciales de acceso S3 de tu cuenta toDus. Se obtienen dentro de toDus:
+La librería `todus` ([nyxthor-dev/todus-client](https://github.com/nyxthor-dev/todus-client)) **gestiona la autenticación con s3.todus.cu internamente**. No necesitas token, ni Access Key, ni Secret Key.
 
-1. Abre la app de toDus.
-2. Ve a **Ajustes** → **Almacenamiento** (o **Cuenta** → **S3**).
-3. Copia el **Access Key** y el **Secret Key**.
-4. Pégalos en el `.env`:
-   ```
-   S3_ACCESS_KEY=tu_access_key_aqui
-   S3_SECRET_KEY=tu_secret_key_aqui
-   ```
+Cada usuario de Telegram tiene su propio namespace `tg_<user_id>` creado automáticamente la primera vez que sube un archivo. Los archivos se suben con:
 
-> El endpoint (`https://s3.todus.cu`) y el bucket (`todus`) ya vienen preconfigurados en el bot — no tienes que tocarlos.
+```python
+from todus import NamespaceManager
+
+manager = NamespaceManager()
+ns_name = f"tg_{user_id}"
+if not manager.exists(ns_name):
+    manager.create(ns_name, description=f"@{username}")
+ns = manager.get_namespace(ns_name)
+
+result = ns.upload(
+    local_path=local_path,
+    path="telegram",
+    original_name=filename,
+    metadata={"from": "telegram"},
+)
+share_url = ns.share_url(result.key).url
+```
+
+La librería se instala automáticamente desde GitHub al construir el Docker (`pip install git+https://github.com/nyxthor-dev/todus-client.git`).
 
 ---
 
@@ -91,10 +102,7 @@ BOT_OWNER_ID=123456789
 BOT_ALLOWED_USERS=
 MAX_FILE_MB=800
 
-S3_ACCESS_KEY=tu_access_key
-S3_SECRET_KEY=tu_secret_key
-
-S3_CHUNK_SIZE_MB=8
+S3_CHUNK_SIZE_MB=50
 S3_MAX_PARALLEL=3
 S3_MAX_RETRIES=10
 ```

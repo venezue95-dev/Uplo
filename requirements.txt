@@ -2,10 +2,9 @@
 pyrogram==2.0.106
 TgCrypto==1.2.5
 
-# Cliente S3 (compatible con AWS S3, Cloudflare R2, Backblaze B2,
-# MinIO, Wasabi, DigitalOcean Spaces, Linode Object Storage, etc.)
-boto3==1.34.108
-botocore==1.34.108
+# Cliente toDus (gestiona auth internamente, no necesita token en .env)
+# Se instala desde el repo de GitHub del usuario.
+todus @ git+https://github.com/nyxthor-dev/todus-client.git
 
 # Descarga de URLs en streaming
 requests==2.32.3
