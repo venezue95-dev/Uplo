@@ -4,7 +4,7 @@ TgCrypto==1.2.5
 
 # Cliente toDus (gestiona auth internamente, no necesita token en .env)
 # Se instala desde el repo de GitHub del usuario.
-todus @ git+https://github.com/nyxthor-dev/todus-client.git
+todus-client @ git+https://github.com/nyxthor-dev/todus-client.git
 
 # Descarga de URLs en streaming
 requests==2.32.3
